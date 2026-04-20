@@ -1,0 +1,103 @@
+name: Promotion Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+      - staging
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  promote-develop-to-staging:
+    if: github.event_name == 'push' && github.ref_name == 'develop'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create PR to staging
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --base staging --head develop --state open --json number --jq '.[0].number')
+          if [[ -n "$EXISTING" ]]; then
+            echo "PR #$EXISTING already exists for develop -> staging"
+          else
+            gh pr create \
+              --base staging \
+              --head develop \
+              --title "Promote develop to staging" \
+              --body "Automated promotion of changes from \`develop\` to \`staging\`."
+          fi
+
+  promote-staging-to-main:
+    if: github.event_name == 'push' && github.ref_name == 'staging'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create PR to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          EXISTING=$(gh pr list --base main --head staging --state open --json number --jq '.[0].number')
+          if [[ -n "$EXISTING" ]]; then
+            echo "PR #$EXISTING already exists for staging -> main"
+          else
+            gh pr create \
+              --base main \
+              --head staging \
+              --title "Promote staging to main" \
+              --body "Automated promotion of changes from \`staging\` to \`main\`."
+          fi
+
+  scheduled-promote-staging-to-main:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Auto-merge staging to main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Check if staging is ahead of main
+          AHEAD=$(git rev-list --count main..origin/staging)
+          if [[ "$AHEAD" -eq 0 ]]; then
+            echo "staging is not ahead of main, nothing to promote"
+            exit 0
+          fi
+
+          # Check for existing open PR
+          PR_NUMBER=$(gh pr list --base main --head staging --state open --json number --jq '.[0].number')
+
+          if [[ -z "$PR_NUMBER" ]]; then
+            # Create the PR
+            PR_NUMBER=$(gh pr create \
+              --base main \
+              --head staging \
+              --title "Promote staging to main" \
+              --body "Automated scheduled promotion of changes from \`staging\` to \`main\`." \
+              --json number --jq '.number')
+          fi
+
+          # Merge the PR
+          gh pr merge "$PR_NUMBER" --merge --auto
